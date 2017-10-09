@@ -40,6 +40,7 @@
 #define GAZEBO_ROS_SKID_STEER_DRIVE_H_
 
 #include <map>
+#include <vector>
 
 #include <gazebo/common/common.hh>
 #include <gazebo/physics/physics.hh>
@@ -50,7 +51,7 @@
 #include <tf/transform_listener.h>
 #include <geometry_msgs/Twist.h>
 #include <nav_msgs/Odometry.h>
-#include <nav_msgs/OccupancyGrid.h>
+#include <sensor_msgs/JointState.h>
 
 // Custom Callback Queue
 #include <ros/callback_queue.h>
@@ -78,6 +79,8 @@ namespace gazebo {
 
     private:
       void publishOdometry(double step_time);
+      void publishWheelJointState();
+      void publishWheelTF();
       void getWheelVelocities();
 
       physics::WorldPtr world;
@@ -94,13 +97,15 @@ namespace gazebo {
       double torque;
       double wheel_speed_[4];
 
-      physics::JointPtr joints[4];
+      std::vector<physics::JointPtr> joints_;
 
       // ROS STUFF
       ros::NodeHandle* rosnode_;
       ros::Publisher odometry_publisher_;
       ros::Subscriber cmd_vel_subscriber_;
       tf::TransformBroadcaster *transform_broadcaster_;
+      sensor_msgs::JointState joint_state_;
+      ros::Publisher joint_state_publisher_;
       nav_msgs::Odometry odom_;
       std::string tf_prefix_;
       bool broadcast_tf_;
@@ -134,6 +139,9 @@ namespace gazebo {
       double covariance_y_;
       double covariance_yaw_;
 
+      // Flags
+      bool publish_wheel_tf_;
+      bool publish_wheel_joint_state_;
   };
 
 }

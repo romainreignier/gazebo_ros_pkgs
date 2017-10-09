@@ -96,6 +96,26 @@ namespace gazebo {
       this->broadcast_tf_ = _sdf->GetElement("broadcastTF")->Get<bool>();
     }
 
+    this->publish_wheel_tf_ = false;
+    if (!_sdf->HasElement("publishWheelTF")) {
+      if (!this->publish_wheel_tf_)
+          ROS_INFO_NAMED("skid_steer_drive", "GazeboRosSkidSteerDrive Plugin (ns = %s) missing <publishWheelTF>, defaults to false.",this->robot_namespace_.c_str());
+      else ROS_INFO_NAMED("skid_steer_drive", "GazeboRosSkidSteerDrive Plugin (ns = %s) missing <publishWheelTF>, defaults to true.",this->robot_namespace_.c_str());
+
+    } else {
+      this->publish_wheel_tf_ = _sdf->GetElement("publishWheelTF")->Get<bool>();
+    }
+
+    this->publish_wheel_joint_state_ = false;
+    if (!_sdf->HasElement("publishWheeJointState")) {
+      if (!this->publish_wheel_joint_state_)
+          ROS_INFO_NAMED("skid_steer_drive", "GazeboRosSkidSteerDrive Plugin (ns = %s) missing <publishWheelJoinState>, defaults to false.",this->robot_namespace_.c_str());
+      else ROS_INFO_NAMED("skid_steer_drive", "GazeboRosSkidSteerDrive Plugin (ns = %s) missing <publishWheelJointState>, defaults to true.",this->robot_namespace_.c_str());
+
+    } else {
+      this->publish_wheel_joint_state_ = _sdf->GetElement("publishWheelJointState")->Get<bool>();
+    }
+
     // TODO write error if joint doesn't exist!
     this->left_front_joint_name_ = "left_front_joint";
     if (!_sdf->HasElement("leftFrontJoint")) {
@@ -237,18 +257,19 @@ namespace gazebo {
     wheel_speed_[RIGHT_FRONT] = 0;
     wheel_speed_[LEFT_FRONT] = 0;
     wheel_speed_[RIGHT_REAR] = 0;
-	wheel_speed_[LEFT_REAR] = 0;
+    wheel_speed_[LEFT_REAR] = 0;
 
     x_ = 0;
     rot_ = 0;
     alive_ = true;
 
-    joints[LEFT_FRONT] = this->parent->GetJoint(left_front_joint_name_);
-    joints[RIGHT_FRONT] = this->parent->GetJoint(right_front_joint_name_);
-    joints[LEFT_REAR] = this->parent->GetJoint(left_rear_joint_name_);
-    joints[RIGHT_REAR] = this->parent->GetJoint(right_rear_joint_name_);
+    joints_.resize(4);
+    joints_[LEFT_FRONT] = this->parent->GetJoint(left_front_joint_name_);
+    joints_[RIGHT_FRONT] = this->parent->GetJoint(right_front_joint_name_);
+    joints_[LEFT_REAR] = this->parent->GetJoint(left_rear_joint_name_);
+    joints_[RIGHT_REAR] = this->parent->GetJoint(right_rear_joint_name_);
 
-    if (!joints[LEFT_FRONT]) {
+    if (!joints_[LEFT_FRONT]) {
       char error[200];
       snprintf(error, 200,
           "GazeboRosSkidSteerDrive Plugin (ns = %s) couldn't get left front hinge joint named \"%s\"",
@@ -256,7 +277,7 @@ namespace gazebo {
       gzthrow(error);
     }
 
-    if (!joints[RIGHT_FRONT]) {
+    if (!joints_[RIGHT_FRONT]) {
       char error[200];
       snprintf(error, 200,
           "GazeboRosSkidSteerDrive Plugin (ns = %s) couldn't get right front hinge joint named \"%s\"",
@@ -264,7 +285,7 @@ namespace gazebo {
       gzthrow(error);
     }
 
-    if (!joints[LEFT_REAR]) {
+    if (!joints_[LEFT_REAR]) {
 	 char error[200];
 	 snprintf(error, 200,
 		 "GazeboRosSkidSteerDrive Plugin (ns = %s) couldn't get left rear hinge joint named \"%s\"",
@@ -272,7 +293,7 @@ namespace gazebo {
 	 gzthrow(error);
    }
 
-   if (!joints[RIGHT_REAR]) {
+   if (!joints_[RIGHT_REAR]) {
 	 char error[200];
 	 snprintf(error, 200,
 		 "GazeboRosSkidSteerDrive Plugin (ns = %s) couldn't get right rear hinge joint named \"%s\"",
@@ -281,10 +302,10 @@ namespace gazebo {
    }
 
 #if GAZEBO_MAJOR_VERSION > 2
-    joints[LEFT_FRONT]->SetParam("fmax", 0, torque);
-    joints[RIGHT_FRONT]->SetParam("fmax", 0, torque);
-    joints[LEFT_REAR]->SetParam("fmax", 0, torque);
-    joints[RIGHT_REAR]->SetParam("fmax", 0, torque);
+    joints_[LEFT_FRONT]->SetParam("fmax", 0, torque);
+    joints_[RIGHT_FRONT]->SetParam("fmax", 0, torque);
+    joints_[LEFT_REAR]->SetParam("fmax", 0, torque);
+    joints_[RIGHT_REAR]->SetParam("fmax", 0, torque);
 #else
     joints[LEFT_FRONT]->SetMaxForce(0, torque);
     joints[RIGHT_FRONT]->SetMaxForce(0, torque);
@@ -303,6 +324,12 @@ namespace gazebo {
     rosnode_ = new ros::NodeHandle(this->robot_namespace_);
 
     ROS_INFO_NAMED("skid_steer_drive", "Starting GazeboRosSkidSteerDrive Plugin (ns = %s)", this->robot_namespace_.c_str());
+
+    if (this->publish_wheel_joint_state_)
+    {
+        joint_state_publisher_ = rosnode_->advertise<sensor_msgs::JointState>("joint_states", 1000);
+        ROS_INFO_NAMED("skid_steer_drive", "Advertise joint_states");
+    }
 
     tf_prefix_ = tf::getPrefixParam(*rosnode_);
     transform_broadcaster_ = new tf::TransformBroadcaster();
@@ -328,6 +355,40 @@ namespace gazebo {
 
   }
 
+  void GazeboRosSkidSteerDrive::publishWheelJointState() {
+    ros::Time current_time = ros::Time::now();
+
+    joint_state_.header.stamp = current_time;
+    joint_state_.name.resize ( joints_.size() );
+    joint_state_.position.resize ( joints_.size() );
+
+    for (size_t i = 0; i < joints_.size(); i++ ) {
+        physics::JointPtr joint = joints_[i];
+        math::Angle angle = joint->GetAngle ( 0 );
+        joint_state_.name[i] = joint->GetName();
+        joint_state_.position[i] = angle.Radian () ;
+    }
+    joint_state_publisher_.publish ( joint_state_ );
+  }
+
+  void GazeboRosSkidSteerDrive::publishWheelTF() {
+    ros::Time current_time = ros::Time::now();
+    for (std::size_t i = 0; i < joints_.size(); i++ ) {
+
+        std::string wheel_frame = tf::resolve(tf_prefix_, joints_[i]->GetChild()->GetName ());
+        std::string wheel_parent_frame = tf::resolve(tf_prefix_, joints_[i]->GetParent()->GetName ());
+
+        math::Pose poseWheel = joints_[i]->GetChild()->GetRelativePose();
+
+        tf::Quaternion qt ( poseWheel.rot.x, poseWheel.rot.y, poseWheel.rot.z, poseWheel.rot.w );
+        tf::Vector3 vt ( poseWheel.pos.x, poseWheel.pos.y, poseWheel.pos.z );
+
+        tf::Transform tfWheel ( qt, vt );
+        transform_broadcaster_->sendTransform (
+            tf::StampedTransform ( tfWheel, current_time, wheel_parent_frame, wheel_frame ) );
+    }
+  }
+
   // Update the controller
   void GazeboRosSkidSteerDrive::UpdateChild() {
     common::Time current_time = this->world->GetSimTime();
@@ -336,14 +397,16 @@ namespace gazebo {
     if (seconds_since_last_update > update_period_) {
 
       publishOdometry(seconds_since_last_update);
+      if (this->publish_wheel_tf_) publishWheelTF();
+      if (this->publish_wheel_joint_state_) publishWheelJointState();
 
       // Update robot in case new velocities have been requested
       getWheelVelocities();
 #if GAZEBO_MAJOR_VERSION > 2
-      joints[LEFT_FRONT]->SetParam("vel", 0, wheel_speed_[LEFT_FRONT] / (wheel_diameter_ / 2.0));
-      joints[RIGHT_FRONT]->SetParam("vel", 0, wheel_speed_[RIGHT_FRONT] / (wheel_diameter_ / 2.0));
-      joints[LEFT_REAR]->SetParam("vel", 0, wheel_speed_[LEFT_REAR] / (wheel_diameter_ / 2.0));
-      joints[RIGHT_REAR]->SetParam("vel", 0, wheel_speed_[RIGHT_REAR] / (wheel_diameter_ / 2.0));
+      joints_[LEFT_FRONT]->SetParam("vel", 0, wheel_speed_[LEFT_FRONT] / (wheel_diameter_ / 2.0));
+      joints_[RIGHT_FRONT]->SetParam("vel", 0, wheel_speed_[RIGHT_FRONT] / (wheel_diameter_ / 2.0));
+      joints_[LEFT_REAR]->SetParam("vel", 0, wheel_speed_[LEFT_REAR] / (wheel_diameter_ / 2.0));
+      joints_[RIGHT_REAR]->SetParam("vel", 0, wheel_speed_[RIGHT_REAR] / (wheel_diameter_ / 2.0));
 #else
       joints[LEFT_FRONT]->SetVelocity(0, wheel_speed_[LEFT_FRONT] / (wheel_diameter_ / 2.0));
       joints[RIGHT_FRONT]->SetVelocity(0, wheel_speed_[RIGHT_FRONT] / (wheel_diameter_ / 2.0));
